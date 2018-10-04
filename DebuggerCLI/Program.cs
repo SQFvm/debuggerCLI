@@ -59,6 +59,9 @@ namespace DebuggerCLI
                 {
                     using (var client = new TcpClient("localhost", 9090))
                     {
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine($"Connected to {(client.Client.RemoteEndPoint as System.Net.IPEndPoint).Address.ToString()} on port {(client.Client.RemoteEndPoint as System.Net.IPEndPoint).Port} via local port {(client.Client.LocalEndPoint as System.Net.IPEndPoint).Port}.");
+                        Console.ResetColor();
                         stream = client.GetStream();
                         var buffer = new byte[1 << 11];
                         while (client.Connected)
