@@ -10,8 +10,9 @@ using System.Threading.Tasks;
 
 namespace DebuggerCLI
 {
-    class Program
+    public class Program
     {
+        private static Thread ConnectionThread;
         private static string DecodeMSG(dynamic obj)
         {
             switch (((string)obj.mode).ToLower())
@@ -45,20 +46,88 @@ namespace DebuggerCLI
                     }
             }
         }
+
+        private static bool continueExecution = true;
+        private static bool isInInterrupt = false;
+        private static bool decodemessages = true;
+
+        private static void ConnectionThread_Method()
+        {
+            while (continueExecution)
+            {
+                try
+                {
+                    using (var client = new TcpClient("localhost", 9090))
+                    {
+                        stream = client.GetStream();
+                        var buffer = new byte[1 << 11];
+                        while (client.Connected)
+                        {
+                            if (!continueExecution)
+                            {
+                                break;
+                            }
+
+                            var read = stream.Read(buffer, 0, buffer.Length);
+                            if (read == 0)
+                            {
+                                break;
+                            }
+                            var recv = Encoding.ASCII.GetString(buffer, 0, read);
+                            foreach (var str in recv.Split('\0').Where((s) => !String.IsNullOrWhiteSpace(s)))
+                            {
+                                while (isInInterrupt) { Thread.Sleep(100); }
+                                try
+                                {
+                                    dynamic obj = JsonConvert.DeserializeObject(str);
+                                    if (decodemessages)
+                                    {
+                                        Console.WriteLine($"[<--][{DateTime.Now}] {DecodeMSG(obj)}");
+                                    }
+                                    else
+                                    {
+                                        var output = JsonConvert.SerializeObject(obj, Formatting.Indented);
+                                        Console.WriteLine($"[<--][{DateTime.Now}] RECEIVE");
+                                        Console.WriteLine(output);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.ForegroundColor = ConsoleColor.Red;
+                                    Console.WriteLine($"{DateTime.Now} - {ex.Message}");
+                                    Console.ResetColor();
+                                    Console.WriteLine($"[<--][{DateTime.Now}] RECEIVE WITH JSON PARSE ERR");
+                                    Console.WriteLine(str);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    stream = null;
+                    while (isInInterrupt) { Thread.Sleep(100); }
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"{DateTime.Now} - {ex.Message}");
+                    Console.ResetColor();
+                }
+            }
+        }
+
         static Stream stream;
         static void Main(string[] args)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("Use CTRL-C to enter commands or to communicate with the server.");
+            Console.WriteLine("Using CTRL+BACKSPACE, you can delete whole words (space-to-space).");
+            Console.WriteLine("Using ENTER you can send a command/request.");
+            Console.WriteLine("Using TAB you can auto-complete a command.");
             Console.WriteLine("Arguments are separated via space. Using quotes (\"), it is possible to chain arguments.");
-            Console.WriteLine("':?' will output help.");
+            Console.WriteLine("'?' will output help.");
             Console.ResetColor();
-            var continueExecution = true;
-            var isInInterrupt = false;
             var toExecute = String.Empty;
             var handler = new CommandHandler();
-            var decodemessages = true;
             var displaysend = false;
+
             #region quit
             handler.Add(new CommandHandlerItem("q", "quit", "Shuts down the application.", () => Environment.Exit(0)));
             #endregion
@@ -185,111 +254,165 @@ namespace DebuggerCLI
                 "- OPTIONAL file name."
             ));
             #endregion
-            Console.CancelKeyPress += (sender, e) =>
-            {
-                e.Cancel = true;
-                isInInterrupt = true;
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.Write("> ");
-                var input = Console.ReadLine();
-                Console.ResetColor();
-                byte[] bytes;
-                if (String.IsNullOrWhiteSpace(input))
-                {
-                    return;
-                }
 
-                if (handler.TryHandle(input))
-                {
-                    if (!String.IsNullOrWhiteSpace(toExecute))
-                    {
-                        if (displaysend)
-                        {
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine($"[-->][{DateTime.Now}] SEND");
-                            Console.WriteLine(toExecute);
-                            Console.ResetColor();
-                        }
-                        bytes = Encoding.ASCII.GetBytes(toExecute);
-                        stream.Write(bytes, 0, bytes.Length);
-                        stream.WriteByte(0);
-                        toExecute = String.Empty;
-                    }
-                    isInInterrupt = false;
-                    return;
-                }
-                if (stream == null)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"Not yet connected.");
-                    Console.ResetColor();
-                    return;
-                }
-                bytes = Encoding.ASCII.GetBytes(input);
-                stream.Write(bytes, 0, bytes.Length);
-                stream.WriteByte(0);
-                isInInterrupt = false;
-            };
+            ConnectionThread = new Thread(ConnectionThread_Method);
+            ConnectionThread.Start();
 
             while (continueExecution)
             {
-                try
+                ConsoleKeyInfo keyinfo = Console.ReadKey(true);
+                if (keyinfo.Key != ConsoleKey.Escape && !(keyinfo.Modifiers == ConsoleModifiers.Shift && keyinfo.Key == ConsoleKey.C))
                 {
-                    using (var client = new TcpClient("localhost", 9090))
+                    isInInterrupt = true;
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.Write("> ");
+                }
+                var builder = new StringBuilder();
+                string tabsource = String.Empty;
+                IEnumerator<string> autocomplete = null;
+                bool first = true;
+                while ((first || keyinfo.Key != ConsoleKey.Enter) && keyinfo.Key != ConsoleKey.Escape && !(keyinfo.Modifiers == ConsoleModifiers.Shift && keyinfo.Key == ConsoleKey.C))
+                {
+                    if (keyinfo.Key == ConsoleKey.Tab && !builder.ToString().Any((c) => c == ' '))
                     {
-                        stream = client.GetStream();
-                        var buffer = new byte[1 << 11];
-                        while (client.Connected)
+                        if (autocomplete != null && !autocomplete.MoveNext())
                         {
-                            if (!continueExecution)
+                            autocomplete = null;
+                            if (builder.ToString() != tabsource)
                             {
-                                break;
+                                Console.Write(new string('\b', builder.Length));
+                                Console.Write(new string(' ', builder.Length));
+                                Console.Write(new string('\b', builder.Length));
+                                builder = new StringBuilder(tabsource);
+                                Console.Write(tabsource);
+                                tabsource = null;
                             }
-
-                            var read = stream.Read(buffer, 0, buffer.Length);
-                            if (read == 0)
+                            System.Media.SystemSounds.Beep.Play();
+                        }
+                        if (autocomplete == null)
+                        {
+                            autocomplete = handler.AutoComplete(builder.ToString());
+                            tabsource = builder.ToString();
+                            if (!autocomplete.MoveNext())
                             {
-                                break;
-                            }
-                            var recv = Encoding.ASCII.GetString(buffer, 0, read);
-                            foreach (var str in recv.Split('\0').Where((s) => !String.IsNullOrWhiteSpace(s)))
-                            {
-                                while (isInInterrupt) { Thread.Sleep(100); }
-                                try
-                                {
-                                    dynamic obj = JsonConvert.DeserializeObject(str);
-                                    if (decodemessages)
-                                    {
-                                        Console.WriteLine($"[<--][{DateTime.Now}] {DecodeMSG(obj)}");
-                                    }
-                                    else
-                                    {
-                                        var output = JsonConvert.SerializeObject(obj, Formatting.Indented);
-                                        Console.WriteLine($"[<--][{DateTime.Now}] RECEIVE");
-                                        Console.WriteLine(output);
-                                    }
-                                }
-                                catch(Exception ex)
-                                {
-                                    Console.ForegroundColor = ConsoleColor.Red;
-                                    Console.WriteLine($"{DateTime.Now} - {ex.Message}");
-                                    Console.ResetColor();
-                                    Console.WriteLine($"[<--][{DateTime.Now}] RECEIVE WITH JSON PARSE ERR");
-                                    Console.WriteLine(str);
-                                }
+                                autocomplete = null;
+                                System.Media.SystemSounds.Beep.Play();
                             }
                         }
+                        if (autocomplete != null)
+                        {
+                            Console.Write(new string('\b', builder.Length));
+                            Console.Write(new string(' ', builder.Length));
+                            Console.Write(new string('\b', builder.Length));
+                            builder = new StringBuilder(autocomplete.Current);
+                            Console.Write(builder.ToString());
+                        }
+                    }
+                    else
+                    {
+                        if (autocomplete != null)
+                        {
+                            autocomplete = null;
+                            tabsource = null;
+                        }
+                        if (keyinfo.Key == ConsoleKey.Backspace)
+                        {
+                            if (builder.Length == 0)
+                            {
+                                if (!first)
+                                {
+                                    System.Media.SystemSounds.Beep.Play();
+                                }
+                            }
+                            else if (keyinfo.Modifiers == ConsoleModifiers.Control)
+                            {
+                                var tmp = builder.ToString();
+                                var lastindex = tmp.TrimEnd().LastIndexOf(' ');
+                                if (lastindex >= 0)
+                                {
+                                    var range = builder.Length - lastindex;
+                                    builder.Remove(lastindex, range);
+                                    Console.Write(new string('\b', range));
+                                    Console.Write(new string(' ', range));
+                                    Console.Write(new string('\b', range));
+                                }
+                                else if (builder.Length > 0)
+                                {
+                                    Console.Write(new string('\b', builder.Length));
+                                    Console.Write(new string(' ', builder.Length));
+                                    Console.Write(new string('\b', builder.Length));
+                                    builder = new StringBuilder();
+                                }
+                            }
+                            else
+                            {
+                                builder.Remove(builder.Length - 1, 1);
+                                Console.Write("\b \b");
+                            }
+                        }
+                        else if (keyinfo.KeyChar != '\0' && keyinfo.Key != ConsoleKey.Enter && !(builder.Length == 0 && keyinfo.KeyChar == ' '))
+                        {
+                            builder.Append(keyinfo.KeyChar);
+                            Console.Write(keyinfo.KeyChar);
+                        }
+                    }
+                    first = false;
+                    keyinfo = Console.ReadKey(true);
+                }
+                Console.ResetColor();
+                if (keyinfo.Key == ConsoleKey.Escape || builder.Length == 0)
+                {
+                    if (builder.Length > 0)
+                    {
+                        Console.Write(new string('\b', builder.Length));
+                        Console.Write(new string(' ', builder.Length));
+                        Console.Write(new string('\b', builder.Length));
+                    }
+                    Console.Write("\b\b \b");
+                }
+                else if (keyinfo.Modifiers == ConsoleModifiers.Shift && keyinfo.Key == ConsoleKey.C)
+                {
+                    continueExecution = false;
+                }
+                else
+                {
+                    Console.WriteLine();
+                    byte[] bytes;
+                    var input = builder.ToString();
+                    if (handler.TryHandle(input))
+                    {
+                        if (!String.IsNullOrWhiteSpace(toExecute))
+                        {
+                            if (displaysend)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.WriteLine($"[-->][{DateTime.Now}] SEND");
+                                Console.WriteLine(toExecute);
+                                Console.ResetColor();
+                            }
+                            bytes = Encoding.ASCII.GetBytes(toExecute);
+                            stream.Write(bytes, 0, bytes.Length);
+                            stream.WriteByte(0);
+                            toExecute = String.Empty;
+                        }
+                    }
+                    else if (stream == null)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"Not yet connected.");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        bytes = Encoding.ASCII.GetBytes(input);
+                        stream.Write(bytes, 0, bytes.Length);
+                        stream.WriteByte(0);
                     }
                 }
-                catch (Exception ex)
-                {
-                    stream = null;
-                    while (isInInterrupt) { Thread.Sleep(100); }
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"{DateTime.Now} - {ex.Message}");
-                    Console.ResetColor();
-                }
+                isInInterrupt = false;
             }
+            ConnectionThread.Join();
         }
+
     }
 }

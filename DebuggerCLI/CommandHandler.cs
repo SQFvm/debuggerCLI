@@ -21,6 +21,7 @@ namespace DebuggerCLI
         }
         private void HelpDetailsMethod(string name)
         {
+            if (String.IsNullOrWhiteSpace(name)) { throw new ArgumentException("Missing argument 1"); }
             ICommandHandlerItem cmd = this._Commands.FirstOrDefault((it) => it.Name.Equals(name) || it.ShortName.Equals(name));
             Console.ForegroundColor = ConsoleColor.Yellow;
             if (cmd == null)
@@ -115,43 +116,64 @@ namespace DebuggerCLI
 
         public bool TryHandle(string input)
         {
-            if (input.Length > 1 && input[0] == ':')
+            var index = input.IndexOf(' ');
+            var command = (index == -1 ? input : input.Substring(0, index)).ToLowerInvariant();
+            var content = index == -1 ? String.Empty : input.Substring(index + 1);
+            foreach (var cmd in this._Commands)
             {
-                input = input.Substring(1);
-                var index = input.IndexOf(' ');
-                var command = (index == -1 ? input : input.Substring(0, index)).ToLowerInvariant();
-                var content = index == -1 ? String.Empty : input.Substring(index + 1);
-                foreach (var cmd in this._Commands)
+                if (cmd.Name.Equals(command) || cmd.ShortName.Equals(command))
                 {
-                    if (cmd.Name.Equals(command) || cmd.ShortName.Equals(command))
+                    var values = Regex.Matches(content, @"[\""].+?[\""]|[^ ]+").Cast<Match>().Select(m =>
                     {
-                        var values = Regex.Matches(content, @"[\""].+?[\""]|[^ ]+").Cast<Match>().Select(m =>
+                        var val = m.Value.Trim();
+                        if (val.Length >= 2 && val[0] == '"' && val[val.Length - 1] == '"')
                         {
-                            var val = m.Value.Trim();
-                            if (val.Length >= 2 && val[0] == '"' && val[val.Length - 1] == '"')
-                            {
-                                return val.Substring(1, val.Length - 2);
-                            }
-                            return val;
-                        }).ToArray();
-                        try
-                        {
-                            cmd.Execute(values);
+                            return val.Substring(1, val.Length - 2);
                         }
-                        catch (Exception ex)
-                        {
-                            Console.ForegroundColor = ConsoleColor.Black;
-                            Console.BackgroundColor = ConsoleColor.Red;
-                            Console.Write("Execution failed:");
-                            Console.WriteLine(ex.Message);
-                            Console.WriteLine($"Use `:help {cmd.Name}` to get help on this command.");
-                            Console.ResetColor();
-                        }
-                        return true;
+                        return val;
+                    }).ToArray();
+                    try
+                    {
+                        cmd.Execute(values);
                     }
+                    catch (Exception ex)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Black;
+                        Console.BackgroundColor = ConsoleColor.Red;
+                        Console.Write("Execution failed:");
+                        Console.WriteLine(ex.Message);
+                        Console.WriteLine($"Use `:help {cmd.Name}` to get help on this command.");
+                        Console.ResetColor();
+                    }
+                    return true;
                 }
             }
             return false;
+        }
+
+        internal IEnumerator<string> AutoComplete(string v)
+        {
+            if (v.Length == 0)
+            {
+                foreach (var it in this.Commands)
+                {
+                    yield return it.Name;
+                }
+            }
+            else
+            {
+                foreach (var it in this.Commands)
+                {
+                    if (it.Name.Length > 0 && it.Name.StartsWith(v))
+                    {
+                        yield return it.Name;
+                    }
+                    else if (it.ShortName.Length > 0 && it.ShortName.StartsWith(v))
+                    {
+                        yield return it.ShortName;
+                    }
+                }
+            }
         }
     }
 }
