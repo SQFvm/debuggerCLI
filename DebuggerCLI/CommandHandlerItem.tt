@@ -110,7 +110,7 @@ for (int i = 0; i < 17; i++)
 			{
 				WriteLine (",");
 			}
-			Write($"\t\t\t\titems.Length < {(j + 1),2} ? default(T{j + 1:00}) : (T{j + 1:00})Convert.ChangeType(items[{j,2}], Type.GetTypeCode(typeof(T{j + 1:00})))");
+			Write($"\t\t\t\titems.Length < {(j + 1),2} ? default(T{j + 1:00}) : (T{j + 1:00})Convert.ChangeType(items[{j,2}], typeof(T{j + 1:00}).IsGenericType && typeof(Nullable<>).IsEquivalentTo(typeof(T{j + 1:00}).GetGenericTypeDefinition()) ? typeof(T{j + 1:00}).GetGenericArguments()[0] : typeof(T{j + 1:00}))");
 		}
 		WriteLine("");
 		Write("\t\t\t");
