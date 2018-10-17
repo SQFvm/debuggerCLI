@@ -135,10 +135,30 @@ namespace DebuggerCLI
             handler.Add(new CommandHandlerItem("q", "quit", "Shuts down the application.", () => Environment.Exit(0)));
             #endregion
             #region decodemsg
-            handler.Add(new CommandHandlerItem<bool>("", "decodemsg", $"Allows to change if server messages should be decoded or not. Default: {decodemessages}", (flag) => decodemessages = flag));
+            handler.Add(new CommandHandlerItem<bool?>("", "decodemsg", $"Allows to change if server messages should be decoded or not. Default: {decodemessages}", (flag) =>
+            {
+                if (flag.HasValue)
+                {
+                    decodemessages = flag.Value;
+                }
+                else
+                {
+                    Console.WriteLine($"decodemsg = {decodemessages}");
+                }
+            }).SetDetails("Usage: decodemsg (true|false)"));
             #endregion
-            #region decodemsg
-            handler.Add(new CommandHandlerItem<bool>("", "displaysend", $"Will set a flag wether or not you want the send stuff to output. Default: {displaysend}", (flag) => decodemessages = flag));
+            #region displaysend
+            handler.Add(new CommandHandlerItem<bool?>("", "displaysend", $"Will set a flag wether or not you want the send stuff to output. Default: {displaysend}", (flag) =>
+            {
+                if(flag.HasValue)
+                {
+                    displaysend = flag.Value;
+                }
+                else
+                {
+                    Console.WriteLine($"displaysend = {displaysend}");
+                }
+            }).SetDetails("Usage: displaysend (true|false)"));
             #endregion
             #region callstack (cs)
             handler.Add(new CommandHandlerItem("cs", "callstack", "Sends a request to get the current callstack.", () =>
@@ -210,6 +230,8 @@ namespace DebuggerCLI
                 };
                 toExecute = JsonConvert.SerializeObject(obj, Formatting.Indented);
             }).SetDetails(
+                "Usage: sqf (code) [filename]",
+                "Example: sqf \"diag_log 'test'\" \"my/file.sqf\"",
                 "Expects up to 2 input arguments:",
                 "- SQF content.",
                 "- OPTIONAL file name."
@@ -261,6 +283,8 @@ namespace DebuggerCLI
             ConnectionThread = new Thread(ConnectionThread_Method);
             ConnectionThread.Start();
 
+            var executed = new List<string>();
+            int executedIndex;
             while (continueExecution)
             {
                 ConsoleKeyInfo keyinfo = Console.ReadKey(true);
@@ -273,7 +297,9 @@ namespace DebuggerCLI
                 var builder = new StringBuilder();
                 string tabsource = String.Empty;
                 IEnumerator<string> autocomplete = null;
+                int index = 0;
                 bool first = true;
+                executedIndex = executed.Count;
                 while ((first || keyinfo.Key != ConsoleKey.Enter) && keyinfo.Key != ConsoleKey.Escape && !(keyinfo.Modifiers == ConsoleModifiers.Shift && keyinfo.Key == ConsoleKey.C))
                 {
                     if (keyinfo.Key == ConsoleKey.Tab && !builder.ToString().Any((c) => c == ' '))
@@ -287,6 +313,7 @@ namespace DebuggerCLI
                                 Console.Write(new string(' ', builder.Length));
                                 Console.Write(new string('\b', builder.Length));
                                 builder = new StringBuilder(tabsource);
+                                index = builder.Length;
                                 Console.Write(tabsource);
                                 tabsource = null;
                             }
@@ -309,6 +336,7 @@ namespace DebuggerCLI
                             Console.Write(new string('\b', builder.Length));
                             builder = new StringBuilder(autocomplete.Current);
                             Console.Write(builder.ToString());
+                            index = builder.Length;
                         }
                     }
                     else
@@ -329,34 +357,110 @@ namespace DebuggerCLI
                             }
                             else if (keyinfo.Modifiers == ConsoleModifiers.Control)
                             {
-                                var tmp = builder.ToString();
-                                var lastindex = tmp.TrimEnd().LastIndexOf(' ');
+                                var tmp = builder.ToString(0, index);
+                                var lastindex = tmp.TrimEnd().LastIndexOfAny(new char[] { ' ', '"' });
+                                if(lastindex == -1)
+                                {
+                                    lastindex = 0;
+                                }
                                 if (lastindex >= 0)
                                 {
-                                    var range = builder.Length - lastindex;
+                                    var range = tmp.Length - lastindex - (tmp[tmp.Length - 1] == ' ' ? 1 : 0);
                                     builder.Remove(lastindex, range);
+                                    index -= range;
                                     Console.Write(new string('\b', range));
+                                    tmp = builder.ToString(index, builder.Length - index);
+                                    Console.Write(tmp);
                                     Console.Write(new string(' ', range));
-                                    Console.Write(new string('\b', range));
+                                    Console.Write(new string('\b', range + tmp.Length));
                                 }
                                 else if (builder.Length > 0)
                                 {
+                                    var range = builder.Length - index;
+                                    builder.Remove(0, range);
+                                    index = 0;
                                     Console.Write(new string('\b', builder.Length));
                                     Console.Write(new string(' ', builder.Length));
                                     Console.Write(new string('\b', builder.Length));
-                                    builder = new StringBuilder();
                                 }
                             }
                             else
                             {
                                 builder.Remove(builder.Length - 1, 1);
+                                index = builder.Length;
                                 Console.Write("\b \b");
+                            }
+                        }
+                        else if (keyinfo.Key == ConsoleKey.LeftArrow)
+                        {
+                            if (index != 0)
+                            {
+                                Console.Write('\b');
+                                index--;
+                            }
+                        }
+                        else if (keyinfo.Key == ConsoleKey.RightArrow)
+                        {
+                            if (index != builder.Length)
+                            {
+                                Console.Write(builder[index]);
+                                index++;
+                            }
+                        }
+                        else if (keyinfo.Key == ConsoleKey.UpArrow)
+                        {
+                            executedIndex--;
+                            if(executedIndex < 0)
+                            {
+                                executedIndex = 0;
+                                System.Media.SystemSounds.Beep.Play();
+                            }
+                            else
+                            {
+                                Console.Write(new string('\b', builder.Length));
+                                Console.Write(new string(' ', builder.Length));
+                                Console.Write(new string('\b', builder.Length));
+                                builder = new StringBuilder(executed[executedIndex]);
+                                index = builder.Length;
+                                Console.Write(builder.ToString());
+                            }
+                        }
+                        else if (keyinfo.Key == ConsoleKey.DownArrow)
+                        {
+                            executedIndex++;
+                            if (executedIndex >= executed.Count)
+                            {
+                                executedIndex = executed.Count;
+                                System.Media.SystemSounds.Beep.Play();
+                                Console.Write(new string('\b', builder.Length));
+                                Console.Write(new string(' ', builder.Length));
+                                Console.Write(new string('\b', builder.Length));
+                                builder.Clear();
+                                index = 0;
+                            }
+                            else
+                            {
+                                Console.Write(new string('\b', builder.Length));
+                                Console.Write(new string(' ', builder.Length));
+                                Console.Write(new string('\b', builder.Length));
+                                builder = new StringBuilder(executed[executedIndex]);
+                                index = builder.Length;
+                                Console.Write(builder.ToString());
                             }
                         }
                         else if (keyinfo.KeyChar != '\0' && keyinfo.Key != ConsoleKey.Enter && !(builder.Length == 0 && keyinfo.KeyChar == ' '))
                         {
-                            builder.Append(keyinfo.KeyChar);
-                            Console.Write(keyinfo.KeyChar);
+                            builder.Insert(index, keyinfo.KeyChar);
+                            if(builder.Length != index + 1)
+                            {
+                                Console.Write(builder.ToString(index, builder.Length - index));
+                                Console.Write(new string('\b', builder.Length - index - 1));
+                            }
+                            else
+                            {
+                                Console.Write(keyinfo.KeyChar);
+                            }
+                            index++;
                         }
                     }
                     first = false;
@@ -382,6 +486,7 @@ namespace DebuggerCLI
                     Console.WriteLine();
                     byte[] bytes;
                     var input = builder.ToString();
+                    executed.Add(input);
                     if (handler.TryHandle(input))
                     {
                         if (!String.IsNullOrWhiteSpace(toExecute))
